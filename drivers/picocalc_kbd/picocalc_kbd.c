@@ -613,29 +613,18 @@ static int picocalc_kbd_probe
 #else
 (struct i2c_client* i2c_client)
 #endif
-{
+{    
 	int rc;
 
-	// Initialize key handler system
-	if ((rc = input_probe(i2c_client))) {
-		return rc;
-	}
+	// Register the power-off callback
+	pm_power_off = picocalc_kbd_power_off;
 
-	// Initialize module parameters
-    /*
-	if ((rc = params_probe())) {
-		return rc;
-	}
-    */
+    // Initialize key handler system
+    if ((rc = input_probe(i2c_client))) {
+        return rc;
+    }
 
-/*
-	// Initialize sysfs interface
-	if ((rc = sysfs_probe(i2c_client))) {
-		return rc;
-	}
-*/
-
-	return 0;
+    return 0;
 }
 
 static void picocalc_kbd_shutdown(struct i2c_client* i2c_client)
@@ -647,10 +636,33 @@ static void picocalc_kbd_shutdown(struct i2c_client* i2c_client)
 
 static void picocalc_kbd_remove(struct i2c_client* i2c_client)
 {
-	dev_info_fe(&i2c_client->dev,
+    dev_info_fe(&i2c_client->dev, 
 		"%s Removing picocalc-kbd.\n", __func__);
 
-	picocalc_kbd_shutdown(i2c_client);
+    // Unregister the power-off callback
+    if (pm_power_off == picocalc_kbd_power_off) {
+        pm_power_off = NULL;
+    }
+
+    picocalc_kbd_shutdown(i2c_client);
+}
+
+static void picocalc_kbd_power_off()
+{
+    int rc;
+    uint8_t power_off_cmd[2] = {0x0e, 0x80};
+
+    if (!g_ctx || !g_ctx->i2c_client) {
+        pr_err("picocalc_kbd: Power-off command failed, no valid context\n");
+        return;
+    }
+
+    rc = i2c_master_send(g_ctx->i2c_client, power_off_cmd, sizeof(power_off_cmd));
+    if (rc < 0) {
+        dev_err(&g_ctx->i2c_client->dev, "Failed to send power-off command: %d\n", rc);
+    } else {
+        dev_info(&g_ctx->i2c_client->dev, "Power-off command sent to MCU\n");
+    }
 }
 
 // Driver definitions
