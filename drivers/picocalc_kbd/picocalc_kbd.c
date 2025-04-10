@@ -465,120 +465,129 @@ static void kbd_timer_function(struct timer_list *data)
 
 int input_probe(struct i2c_client* i2c_client)
 {
-	int rc, i;
+    int rc, i;
 
-	// Allocate keyboard context (managed by device lifetime)
-	g_ctx = devm_kzalloc(&i2c_client->dev, sizeof(*g_ctx), GFP_KERNEL);
-	if (!g_ctx) {
-		return -ENOMEM;
-	}
+    // Allocate keyboard context (managed by device lifetime)
+    g_ctx = devm_kzalloc(&i2c_client->dev, sizeof(*g_ctx), GFP_KERNEL);
+    if (!g_ctx) {
+        return -ENOMEM;
+    }
 
-	// Allocate and copy keycode array
-	g_ctx->keycode_map = devm_kmemdup(&i2c_client->dev, keycodes, NUM_KEYCODES,
-		GFP_KERNEL);
-	if (!g_ctx->keycode_map) {
-		return -ENOMEM;
-	}
+    // Allocate and copy keycode array
+    g_ctx->keycode_map = devm_kmemdup(&i2c_client->dev, keycodes, NUM_KEYCODES,
+        GFP_KERNEL);
+    if (!g_ctx->keycode_map) {
+        return -ENOMEM;
+    }
 
-	// Initialize keyboard context
-	g_ctx->i2c_client = i2c_client;
-	g_ctx->last_keypress_at = ktime_get_boottime_ns();
+    // Initialize keyboard context
+    g_ctx->i2c_client = i2c_client;
+    g_ctx->last_keypress_at = ktime_get_boottime_ns();
 
-	// Run subsystem probes
+    // Send command to enable power key events
+    uint8_t enable_power_key_cmd[2] = {0x0e, 0x80};
+    rc = i2c_master_send(i2c_client, enable_power_key_cmd, sizeof(enable_power_key_cmd));
+    if (rc < 0) {
+        dev_err(&i2c_client->dev, "Failed to send power key enable command: %d\n", rc);
+        return rc;
+    }
+    dev_info(&i2c_client->dev, "Power key events enabled on MCU\n");
+
+    // Run subsystem probes
     /*
-	if ((rc = input_fw_probe(i2c_client, g_ctx))) {
-		dev_err(&i2c_client->dev, "picocalc_kbd: input_fw_probe failed\n");
-		return rc;
-	}
-	if ((rc = input_rtc_probe(i2c_client, g_ctx))) {
-		dev_err(&i2c_client->dev, "picocalc_kbd: input_rtc_probe failed\n");
-		return rc;
-	}
-	if ((rc = input_display_probe(i2c_client, g_ctx))) {
-		dev_err(&i2c_client->dev, "picocalc_kbd: input_display_probe failed\n");
-		return rc;
-	}
-	if ((rc = input_modifiers_probe(i2c_client, g_ctx))) {
-		dev_err(&i2c_client->dev, "picocalc_kbd: input_modifiers_probe failed\n");
-		return rc;
-	}
-	if ((rc = input_touch_probe(i2c_client, g_ctx))) {
-		dev_err(&i2c_client->dev, "picocalc_kbd: input_touch_probe failed\n");
-		return rc;
-	}
-	if ((rc = input_meta_probe(i2c_client, g_ctx))) {
-		dev_err(&i2c_client->dev, "picocalc_kbd: input_meta_probe failed\n");
-		return rc;
-	}
+    if ((rc = input_fw_probe(i2c_client, g_ctx))) {
+        dev_err(&i2c_client->dev, "picocalc_kbd: input_fw_probe failed\n");
+        return rc;
+    }
+    if ((rc = input_rtc_probe(i2c_client, g_ctx))) {
+        dev_err(&i2c_client->dev, "picocalc_kbd: input_rtc_probe failed\n");
+        return rc;
+    }
+    if ((rc = input_display_probe(i2c_client, g_ctx))) {
+        dev_err(&i2c_client->dev, "picocalc_kbd: input_display_probe failed\n");
+        return rc;
+    }
+    if ((rc = input_modifiers_probe(i2c_client, g_ctx))) {
+        dev_err(&i2c_client->dev, "picocalc_kbd: input_modifiers_probe failed\n");
+        return rc;
+    }
+    if ((rc = input_touch_probe(i2c_client, g_ctx))) {
+        dev_err(&i2c_client->dev, "picocalc_kbd: input_touch_probe failed\n");
+        return rc;
+    }
+    if ((rc = input_meta_probe(i2c_client, g_ctx))) {
+        dev_err(&i2c_client->dev, "picocalc_kbd: input_meta_probe failed\n");
+        return rc;
+    }
     */
 
-	// Allocate input device
-	if ((g_ctx->input_dev = devm_input_allocate_device(&i2c_client->dev)) == NULL) {
-		dev_err(&i2c_client->dev,
-			"%s Could not devm_input_allocate_device BBQX0KBD.\n", __func__);
-		return -ENOMEM;
-	}
+    // Allocate input device
+    if ((g_ctx->input_dev = devm_input_allocate_device(&i2c_client->dev)) == NULL) {
+        dev_err(&i2c_client->dev,
+            "%s Could not devm_input_allocate_device BBQX0KBD.\n", __func__);
+        return -ENOMEM;
+    }
 
-	// Initialize input device
-	g_ctx->input_dev->name = i2c_client->name;
-	g_ctx->input_dev->id.bustype = KBD_BUS_TYPE;
-	g_ctx->input_dev->id.vendor  = KBD_VENDOR_ID;
-	g_ctx->input_dev->id.product = KBD_PRODUCT_ID;
-	g_ctx->input_dev->id.version = KBD_VERSION_ID;
+    // Initialize input device
+    g_ctx->input_dev->name = i2c_client->name;
+    g_ctx->input_dev->id.bustype = KBD_BUS_TYPE;
+    g_ctx->input_dev->id.vendor  = KBD_VENDOR_ID;
+    g_ctx->input_dev->id.product = KBD_PRODUCT_ID;
+    g_ctx->input_dev->id.version = KBD_VERSION_ID;
 
-	// Initialize input device keycodes
-	g_ctx->input_dev->keycode = keycodes; //g_ctx->keycode_map;
-	g_ctx->input_dev->keycodesize = sizeof(keycodes[0]);
-	g_ctx->input_dev->keycodemax = ARRAY_SIZE(keycodes);
+    // Initialize input device keycodes
+    g_ctx->input_dev->keycode = keycodes; //g_ctx->keycode_map;
+    g_ctx->input_dev->keycodesize = sizeof(keycodes[0]);
+    g_ctx->input_dev->keycodemax = ARRAY_SIZE(keycodes);
 
-	// Set input device keycode bits
-	for (i = 0; i < NUM_KEYCODES; i++) {
-		__set_bit(keycodes[i], g_ctx->input_dev->keybit);
-	}
-	__clear_bit(KEY_RESERVED, g_ctx->input_dev->keybit);
-	__set_bit(EV_REP, g_ctx->input_dev->evbit);
-	__set_bit(EV_KEY, g_ctx->input_dev->evbit);
+    // Set input device keycode bits
+    for (i = 0; i < NUM_KEYCODES; i++) {
+        __set_bit(keycodes[i], g_ctx->input_dev->keybit);
+    }
+    __clear_bit(KEY_RESERVED, g_ctx->input_dev->keybit);
+    __set_bit(EV_REP, g_ctx->input_dev->evbit);
+    __set_bit(EV_KEY, g_ctx->input_dev->evbit);
 
-	// Set input device capabilities
-	input_set_capability(g_ctx->input_dev, EV_MSC, MSC_SCAN);
-	input_set_capability(g_ctx->input_dev, EV_REL, REL_X);
-	input_set_capability(g_ctx->input_dev, EV_REL, REL_Y);
+    // Set input device capabilities
+    input_set_capability(g_ctx->input_dev, EV_MSC, MSC_SCAN);
+    input_set_capability(g_ctx->input_dev, EV_REL, REL_X);
+    input_set_capability(g_ctx->input_dev, EV_REL, REL_Y);
 /*
-	input_set_capability(g_ctx->input_dev, EV_ABS, ABS_X);
-	input_set_capability(g_ctx->input_dev, EV_ABS, ABS_Y);
+    input_set_capability(g_ctx->input_dev, EV_ABS, ABS_X);
+    input_set_capability(g_ctx->input_dev, EV_ABS, ABS_Y);
         input_set_abs_params(g_ctx->input_dev, ABS_X, 0, 320, 4, 8);
         input_set_abs_params(g_ctx->input_dev, ABS_Y, 0, 320, 4, 8);
 */
-	input_set_capability(g_ctx->input_dev, EV_KEY, BTN_LEFT);
-	input_set_capability(g_ctx->input_dev, EV_KEY, BTN_RIGHT);
+    input_set_capability(g_ctx->input_dev, EV_KEY, BTN_LEFT);
+    input_set_capability(g_ctx->input_dev, EV_KEY, BTN_RIGHT);
 
-	// Request IRQ handler for I2C client and initialize workqueue
+    // Request IRQ handler for I2C client and initialize workqueue
     /*
-	if ((rc = devm_request_threaded_irq(&i2c_client->dev,
-		i2c_client->irq, NULL, input_irq_handler, IRQF_SHARED | IRQF_ONESHOT,
-		i2c_client->name, g_ctx))) {
+    if ((rc = devm_request_threaded_irq(&i2c_client->dev,
+        i2c_client->irq, NULL, input_irq_handler, IRQF_SHARED | IRQF_ONESHOT,
+        i2c_client->name, g_ctx))) {
 
-		dev_err(&i2c_client->dev,
-			"Could not claim IRQ %d; error %d\n", i2c_client->irq, rc);
-		return rc;
-	}
+        dev_err(&i2c_client->dev,
+            "Could not claim IRQ %d; error %d\n", i2c_client->irq, rc);
+        return rc;
+    }
     */
         g_ctx->mouse_mode = FALSE;
         g_ctx->mouse_move_dir = 0;
-	INIT_WORK(&g_ctx->work_struct, input_workqueue_handler);
+    INIT_WORK(&g_ctx->work_struct, input_workqueue_handler);
     g_kbd_timer.expires = jiffies + HZ / 128;
     add_timer(&g_kbd_timer);
 
-	// Register input device with input subsystem
-	dev_info(&i2c_client->dev,
-		"%s registering input device", __func__);
-	if ((rc = input_register_device(g_ctx->input_dev))) {
-		dev_err(&i2c_client->dev,
-			"Failed to register input device, error: %d\n", rc);
-		return rc;
-	}
+    // Register input device with input subsystem
+    dev_info(&i2c_client->dev,
+        "%s registering input device", __func__);
+    if ((rc = input_register_device(g_ctx->input_dev))) {
+        dev_err(&i2c_client->dev,
+            "Failed to register input device, error: %d\n", rc);
+        return rc;
+    }
 
-	return 0;
+    return 0;
 }
 
 void input_shutdown(struct i2c_client* i2c_client)
