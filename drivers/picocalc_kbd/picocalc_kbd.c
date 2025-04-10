@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Keyboard Driver for picocalc
+ * Keyboard Driver for picocalc with Power Button Event Handling
  */
 
 #include <linux/version.h>
@@ -13,16 +13,13 @@
 
 //#include "config.h"
 #include "debug_levels.h"
+// Define power button event codes
+#define POWER_BUTTON_EVENT_CODE 0x0e
 
 #define KBD_BUS_TYPE		BUS_I2C
 #define KBD_VENDOR_ID		0x0001
 #define KBD_PRODUCT_ID		0x0001
 #define KBD_VERSION_ID		0x0001
-/*
-#include "input_iface.h"
-#include "params_iface.h"
-#include "sysfs_iface.h"
-*/
 
 #define KBD_FIFO_SIZE				31
 
@@ -50,6 +47,7 @@ struct key_fifo_item
 #define MOUSE_MOVE_UP    (1 << 3)
 #define MOUSE_MOVE_DOWN  (1 << 4)
 
+// Extend the kbd_ctx structure to include power button state
 struct kbd_ctx
 {
 	struct work_struct work_struct;
@@ -147,6 +145,16 @@ static inline int kbd_read_i2c_2u8(struct i2c_client* i2c_client, uint8_t reg_ad
 // Shared global state for global interfaces such as sysfs
 struct kbd_ctx *g_ctx;
 
+// Function to handle power button events
+static void handle_power_button_event(struct kbd_ctx *ctx) {
+	input_report_key(ctx->input_dev, KEY_POWER, 1); // Short press
+	input_sync(ctx->input_dev);
+	input_report_key(ctx->input_dev, KEY_POWER, 0);
+	input_sync(ctx->input_dev);
+	dev_info(&ctx->i2c_client->dev, "Power button press detected\n");
+}
+
+// Update the FIFO reading function to handle power button events
 void input_fw_read_fifo(struct kbd_ctx* ctx)
 {
 	uint8_t fifo_idx;
@@ -177,6 +185,12 @@ void input_fw_read_fifo(struct kbd_ctx* ctx)
         if (data[0] == 0)
         {
             break;
+        }
+
+        // Check for power button event
+        if (data[0] == POWER_BUTTON_EVENT_CODE) {
+            handle_power_button_event(ctx);
+            continue;
         }
 
         ctx->key_fifo_data[fifo_idx]._ = 0;
@@ -683,5 +697,5 @@ module_exit(picocalc_kbd_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("hiro <hiro@hiro.com>");
-MODULE_DESCRIPTION("keyboard driver for picocalc");
-MODULE_VERSION("0.01");
+MODULE_DESCRIPTION("Keyboard driver for picocalc with power button support");
+MODULE_VERSION("0.02");
