@@ -16,12 +16,21 @@
 // Define power button event codes
 #define POWER_BUTTON_EVENT_CODE 0x0e
 
+#define REG_ID_BAT (0x0b)
+#define REG_ID_BKL (0x05)
+#define REG_ID_FIF (0x09)
+#define REG_ID_BK2 (0x0A)
+
+#define PICOCALC_WRITE_MASK (1<<7)
+
 #define KBD_BUS_TYPE		BUS_I2C
 #define KBD_VENDOR_ID		0x0001
 #define KBD_PRODUCT_ID		0x0001
 #define KBD_VERSION_ID		0x0001
 
 #define KBD_FIFO_SIZE				31
+
+static uint32_t sysfs_gid_setting = 0; // GID of files in /sys/firmware/picocalc
 
 static uint64_t mouse_fast_move_thr_time = 150000000ull;
 static int8_t mouse_move_step = 1;
@@ -101,7 +110,6 @@ static inline int kbd_read_i2c_u8(struct i2c_client* i2c_client, uint8_t reg_add
 }
 
 // Write a single uint8_t value to I2C register
-/*
 static inline int kbd_write_i2c_u8(struct i2c_client* i2c_client, uint8_t reg_addr,
 	uint8_t src)
 {
@@ -109,7 +117,7 @@ static inline int kbd_write_i2c_u8(struct i2c_client* i2c_client, uint8_t reg_ad
 
 	// Write value over I2C
 	if ((rc = i2c_smbus_write_byte_data(i2c_client,
-		reg_addr | BBQX0KBD_WRITE_MASK, src))) {
+		reg_addr | PICOCALC_WRITE_MASK, src))) {
 
 		dev_err(&i2c_client->dev,
 			"%s Could not write to register 0x%02X, Error: %d\n",
@@ -119,7 +127,6 @@ static inline int kbd_write_i2c_u8(struct i2c_client* i2c_client, uint8_t reg_ad
 
 	return 0;
 }
-*/
 
 // Read a pair of uint8_t values from I2C register
 static inline int kbd_read_i2c_2u8(struct i2c_client* i2c_client, uint8_t reg_addr,
@@ -607,6 +614,175 @@ void input_shutdown(struct i2c_client* i2c_client)
     del_timer(&g_kbd_timer);
 	g_ctx = NULL;
 }
+
+uint32_t params_get_sysfs_gid(void)
+{
+	return sysfs_gid_setting;
+}
+
+// Read battery percent over I2C
+static int read_battery_percent(void)
+{
+	int rc;
+	uint8_t percent[2];
+
+	// Make sure I2C client was initialized
+	if ((g_ctx == NULL) || (g_ctx->i2c_client == NULL)) {
+		return -EINVAL;
+	}
+
+	// Read battery level
+	if ((rc = kbd_read_i2c_2u8(g_ctx->i2c_client, REG_ID_BAT, percent)) < 0) {
+		return rc;
+	}
+
+	// Calculate raw battery level
+	return percent[1];
+}
+
+static int parse_and_write_i2c_u8(char const* buf, size_t count, uint8_t reg)
+{
+	int parsed;
+
+	// Parse string entry
+	if ((parsed = parse_u8(buf)) < 0) {
+		return -EINVAL;
+	}
+
+	// Write value to LED register if available
+	if (g_ctx && g_ctx->i2c_client) {
+		kbd_write_i2c_u8(g_ctx->i2c_client, reg, (uint8_t)parsed);
+	}
+
+	return count;
+}
+
+// Sysfs entries
+
+// Battery percent approximate
+static ssize_t battery_percent_show(struct kobject *kobj, struct kobj_attribute *attr,
+	char *buf)
+{
+	int percent;
+
+	if ((percent = read_battery_percent()) < 0) {
+		return percent;
+	}
+
+	// Format into buffer
+	return sprintf(buf, "%d\n", percent);
+}
+struct kobj_attribute battery_percent_attr
+	= __ATTR(battery_percent, 0444, battery_percent_show, NULL);
+
+// Keyboard backlight value
+static ssize_t __used keyboard_backlight_store(struct kobject *kobj,
+	struct kobj_attribute *attr, char const *buf, size_t count)
+{
+	return parse_and_write_i2c_u8(buf, count, REG_ID_BK2);
+}
+struct kobj_attribute keyboard_backlight_attr
+	= __ATTR(keyboard_backlight, 0220, NULL, keyboard_backlight_store);
+
+// screen backlight value
+static ssize_t __used screen_backlight_store(struct kobject *kobj,
+	struct kobj_attribute *attr, char const *buf, size_t count)
+{
+	return parse_and_write_i2c_u8(buf, count, REG_ID_BKL);
+}
+struct kobj_attribute screen_backlight_attr
+	= __ATTR(screen_backlight, 0220, NULL, screen_backlight_store);
+
+// Time since last keypress in milliseconds
+static ssize_t last_keypress_show(struct kobject *kobj, struct kobj_attribute *attr,
+	char *buf)
+{
+	uint64_t last_keypress_ms;
+
+	if (g_ctx) {
+
+		// Get time in ns
+		last_keypress_ms = ktime_get_boottime_ns();
+		if (g_ctx->last_keypress_at < last_keypress_ms) {
+			last_keypress_ms -= g_ctx->last_keypress_at;
+
+			// Calculate time in milliseconds
+			last_keypress_ms = div_u64(last_keypress_ms, 1000000);
+
+			// Format into buffer
+			return sprintf(buf, "%lld\n", last_keypress_ms);
+		}
+	}
+
+	return sprintf(buf, "-1\n");
+}
+struct kobj_attribute last_keypress_attr
+	= __ATTR(last_keypress, 0444, last_keypress_show, NULL);
+
+// Sysfs attributes (entries)
+struct kobject *picocalc_kobj = NULL;
+static struct attribute *picocalc_attrs[] = {
+	&battery_percent_attr.attr,
+	&screen_backlight_attr.attr,
+	&last_keypress_attr.attr,
+	&keyboard_backlight_attr.attr,
+	NULL,
+};
+static struct attribute_group picocalc_attr_group = {
+	.attrs = picocalc_attrs
+};
+
+static void picocalc_get_ownership
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
+(struct kobject *kobj, kuid_t *uid, kgid_t *gid)
+#else
+(struct kobject const *kobj, kuid_t *uid, kgid_t *gid)
+#endif
+{
+	if (gid != NULL) {
+		gid->val = params_get_sysfs_gid();
+	}
+}
+
+static struct kobj_type picocalc_ktype = {
+	.get_ownership = picocalc_get_ownership,
+	.sysfs_ops = &kobj_sysfs_ops
+};
+
+int sysfs_probe(struct i2c_client* i2c_client)
+{
+	int rc;
+
+	// Allocate custom sysfs type
+	if ((picocalc_kobj = devm_kzalloc(&i2c_client->dev, sizeof(*picocalc_kobj), GFP_KERNEL)) == NULL) {
+		return -ENOMEM;
+	}
+
+	// Create sysfs entries for picocalc with custom type
+	rc = kobject_init_and_add(picocalc_kobj, &picocalc_ktype, firmware_kobj, "picocalc");
+	if (rc < 0) {
+		kobject_put(picocalc_kobj);
+		return rc;
+	}
+
+	// Create sysfs attributes
+	if (sysfs_create_group(picocalc_kobj, &picocalc_attr_group)) {
+		kobject_put(picocalc_kobj);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+void sysfs_shutdown(struct i2c_client* i2c_client)
+{
+	// Remove sysfs entry
+	if (picocalc_kobj) {
+		kobject_put(picocalc_kobj);
+		picocalc_kobj = NULL;
+	}
+}
+
 static int picocalc_kbd_probe
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
 (struct i2c_client* i2c_client, struct i2c_device_id const* i2c_id)
@@ -624,12 +800,17 @@ static int picocalc_kbd_probe
         return rc;
     }
 
-    return 0;
+	// Initialize sysfs interface
+	if ((rc = sysfs_probe(i2c_client))) {
+		return rc;
+	}
+
+	return 0;
 }
 
 static void picocalc_kbd_shutdown(struct i2c_client* i2c_client)
 {
-//	sysfs_shutdown(i2c_client);
+	sysfs_shutdown(i2c_client);
 //	params_shutdown();
 	input_shutdown(i2c_client);
 }
