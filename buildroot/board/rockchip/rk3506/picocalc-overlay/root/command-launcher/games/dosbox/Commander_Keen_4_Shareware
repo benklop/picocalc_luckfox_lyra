@@ -1,0 +1,3 @@
+#!/bin/sh
+cd /root/dosbox/keen4ega-box/
+dosbox KEEN4.BAT

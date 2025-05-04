@@ -1,0 +1,7 @@
+config BR2_PACKAGE_HOST_FCITX_TOOLS
+	bool "host fcitx-tools"
+        select BR2_PACKAGE_HOST_EXTRA_CMAKE_MODULES
+	help
+          A Flexible Input Method Framework Build Tools
+
+	  https://github.com/fcitx/fcitx

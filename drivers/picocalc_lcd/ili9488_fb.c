@@ -1,5 +1,6 @@
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/ioctl.h>
 #include <linux/fs.h>
 #include <linux/err.h>
@@ -26,6 +27,12 @@
 #include <video/mipi_display.h>
 
 #define DRV_NAME "ili9488_drv"
+
+static int p_3bit_mode = 0;
+module_param(p_3bit_mode, int, 0660);
+
+static int p_dither = 0;
+module_param(p_dither, int, 0660);
 
 struct ili9488_par;
 
@@ -90,7 +97,6 @@ struct ili9488_par {
 
     u32             dirty_lines_start;
     u32             dirty_lines_end;
-
 };
 
 #define gpio_put(d, v) gpiod_set_raw_value(d, v)
@@ -167,7 +173,16 @@ static int ili9488_init_display(struct ili9488_par *priv)
     write_reg(priv, 0xC1, 0x41);                // Power Control 2
     write_reg(priv, 0xC5, 0x00, 0x12, 0x80);    // VCOM Control
     write_reg(priv, 0x36, 0x48);                // Memory Access Control
-    write_reg(priv, 0x3A, 0x66);                // Pixel Interface Format  18 bit colour for SPI
+
+    if (p_3bit_mode)
+    {
+        write_reg(priv, 0x3A, 0x22);                // Pixel Interface Format  3 bit colour for SPI
+    }
+    else
+    {
+        write_reg(priv, 0x3A, 0x55);                // Pixel Interface Format  16 bit colour for SPI
+    }
+
     write_reg(priv, 0xB0, 0x00);                // Interface Mode Control
 
     // Frame Rate Control
@@ -259,9 +274,18 @@ static int ili9488_clear(struct ili9488_par *priv)
     ili9488_set_addr_win(priv, 0, 0, width, height);
 
     gpio_put(priv->gpio.dc, 1);
-    for (x = 0; x < width; x++)
-        for (y = 0; y < height; y++)
-            fbtft_write_spi_wr(priv, &clear, 3);
+    if (p_3bit_mode)
+    {
+        for (x = 0; x < width / 2; x++)
+            for (y = 0; y < height; y++)
+                fbtft_write_spi_wr(priv, &clear, 1);
+    }
+    else
+    {
+        for (x = 0; x < width; x++)
+            for (y = 0; y < height; y++)
+                fbtft_write_spi_wr(priv, &clear, 2);
+    }
     gpio_put(priv->gpio.cs, 1);
 
     return 0;
@@ -456,6 +480,227 @@ static inline u16 rgb565_to_grayscale_byweight(u16 rgb565)
     return cpu_to_be16(to_rgb565(r, g, b));
 }
 
+const uint8_t dither_4x4[4][4] =
+{
+    { 0,  8,  2, 10},
+    {12,  4, 14,  6},
+    { 3, 11,  1,  9},
+    {15,  7, 13,  5},
+};
+
+const uint8_t dither_8x8[8][8] =
+{
+  {   0, 32,  8, 40,  2, 34, 10, 42 },
+  {  48, 16, 56, 24, 50, 18, 58, 26 },
+  {  12, 44,  4, 36, 14, 46,  6, 38 },
+  {  60, 28, 52, 20, 62, 30, 54, 22 },
+  {   3, 35, 11, 43,  1, 33,  9, 41 },
+  {  51, 19, 59, 27, 49, 17, 57, 25 },
+  {  15, 47,  7, 39, 13, 45,  5, 37 },
+  {  63, 31, 55, 23, 61, 29, 53, 21 },
+};
+
+const uint8_t dither_16x16[16][16] =
+{
+{     0, 191,  48, 239,  12, 203,  60, 251,   3, 194,  51, 242,  15, 206,  63, 254  }, 
+{   127,  64, 175, 112, 139,  76, 187, 124, 130,  67, 178, 115, 142,  79, 190, 127  },
+{    32, 223,  16, 207,  44, 235,  28, 219,  35, 226,  19, 210,  47, 238,  31, 222  },
+{   159,  96, 143,  80, 171, 108, 155,  92, 162,  99, 146,  83, 174, 111, 158,  95  },
+{     8, 199,  56, 247,   4, 195,  52, 243,  11, 202,  59, 250,   7, 198,  55, 246  },
+{   135,  72, 183, 120, 131,  68, 179, 116, 138,  75, 186, 123, 134,  71, 182, 119  },
+{    40, 231,  24, 215,  36, 227,  20, 211,  43, 234,  27, 218,  39, 230,  23, 214  },
+{   167, 104, 151,  88, 163, 100, 147,  84, 170, 107, 154,  91, 166, 103, 150,  87  },
+{     2, 193,  50, 241,  14, 205,  62, 253,   1, 192,  49, 240,  13, 204,  61, 252  },
+{   129,  66, 177, 114, 141,  78, 189, 126, 128,  65, 176, 113, 140,  77, 188, 125  },
+{    34, 225,  18, 209,  46, 237,  30, 221,  33, 224,  17, 208,  45, 236,  29, 220  },
+{   161,  98, 145,  82, 173, 110, 157,  94, 160,  97, 144,  81, 172, 109, 156,  93  },
+{    10, 201,  58, 249,   6, 197,  54, 245,   9, 200,  57, 248,   5, 196,  53, 244  },
+{   137,  74, 185, 122, 133,  70, 181, 118, 136,  73, 184, 121, 132,  69, 180, 117  },
+{    42, 233,  26, 217,  38, 229,  22, 213,  41, 232,  25, 216,  37, 228,  21, 212  },
+{   169, 106, 153,  90, 165, 102, 149,  86, 168, 105, 152,  89, 164, 101, 148,  85  }
+};
+
+const size_t matrix_size = 8;
+
+static int write_vmem_3bit_dither(struct ili9488_par *par, size_t offset, size_t len)
+{
+    u16 *vmem16;
+    u8 *txbuf = par->txbuf.buf;
+    size_t remain;
+    size_t to_copy;
+    size_t tx_array_size;
+    int i;
+    int k;
+    size_t cur_offset = offset;
+    const size_t width = par->display->xres;
+    const uint8_t color_red = 1 << 2;
+    const uint8_t color_green = 1 << 1;
+    const uint8_t color_blue = 1 << 3;
+
+    dev_dbg(par->dev, "%s, offset = %d, len = %d\n", __func__, offset, len);
+
+    remain = len / 2;
+    vmem16 = (u16 *)(par->fbinfo->screen_buffer + offset);
+
+    gpio_put(par->gpio.dc, 1);
+
+    /* non-buffered spi write */
+    if (!par->txbuf.buf)
+        return fbtft_write_spi_wr(par, vmem16, len);
+
+    tx_array_size = par->txbuf.len / 3;
+
+    while (remain) {
+        to_copy = min(tx_array_size, remain);
+        dev_dbg(par->fbinfo->device, "to_copy=%zu, remain=%zu\n",
+                to_copy, remain - to_copy);
+
+        for (i = 0, k = 0; i < to_copy; i += 2)
+        {
+            uint32_t col = cur_offset % width;
+            uint32_t row = cur_offset / width;
+
+            uint8_t thr = dither_16x16[row % matrix_size][col % matrix_size];
+
+            txbuf[k] = 0;
+            if ((((vmem16[i] & 0xF800) >> 11) & 0xFF) > (thr + 4) / 8)
+            {
+                txbuf[k] |= color_red << 3;
+            }
+
+            if ((((vmem16[i] & 0x07E0) >> 5) & 0xFF) > (thr + 2) / 4)
+            {
+                txbuf[k] |= color_green << 3;
+            }
+
+            if ((((vmem16[i] & 0x001F)) & 0xFF) > (thr + 4) / 8)
+            {
+                txbuf[k] |= color_blue << 3;
+            }
+
+            cur_offset++;
+
+            col = cur_offset % width;
+            row = cur_offset / width;
+            thr = dither_16x16[row % matrix_size][col % matrix_size];
+
+            if ((((vmem16[i + 1] & 0xF800) >> 11) & 0xFF) > (thr + 4) / 8)
+            {
+                txbuf[k] |= color_red;
+            }
+
+            if ((((vmem16[i + 1] & 0x07E0) >> 5) & 0xFF) > (thr + 2) / 4)
+            {
+                txbuf[k] |= color_green;
+            }
+
+            if ((((vmem16[i + 1] & 0x001F)) & 0xFF) > (thr + 4) / 8)
+            {
+                txbuf[k] |= color_blue;
+            }
+
+            cur_offset++;
+            k++;
+        } 
+
+        /* send batch to device */
+        fbtft_write_spi_wr(par, txbuf, to_copy / 2);
+
+        vmem16 = vmem16 + to_copy;
+        remain -= to_copy;
+    }
+    return 0;
+}
+
+static int write_vmem_3bit(struct ili9488_par *par, size_t offset, size_t len)
+{
+    u16 *vmem16;
+    u8 *txbuf = par->txbuf.buf;
+    size_t remain;
+    size_t to_copy;
+    size_t tx_array_size;
+    int i;
+    int k;
+    size_t cur_offset = offset;
+    const size_t width = par->display->xres;
+    const uint8_t color_red = 1 << 2;
+    const uint8_t color_green = 1 << 1;
+    const uint8_t color_blue = 1 << 3;
+
+    dev_dbg(par->dev, "%s, offset = %d, len = %d\n", __func__, offset, len);
+
+    remain = len / 2;
+    vmem16 = (u16 *)(par->fbinfo->screen_buffer + offset);
+
+    gpio_put(par->gpio.dc, 1);
+
+    /* non-buffered spi write */
+    if (!par->txbuf.buf)
+        return fbtft_write_spi_wr(par, vmem16, len);
+
+    tx_array_size = par->txbuf.len / 3;
+
+    while (remain) {
+        to_copy = min(tx_array_size, remain);
+        dev_dbg(par->fbinfo->device, "to_copy=%zu, remain=%zu\n",
+                to_copy, remain - to_copy);
+
+        for (i = 0, k = 0; i < to_copy; i += 2)
+        {
+            uint32_t col = cur_offset % width;
+            uint32_t row = cur_offset / width;
+
+            uint8_t thr = 8;
+
+            txbuf[k] = 0;
+            if ((((vmem16[i] & 0xF800) >> 11) & 0xFF) >= thr * 2)
+            {
+                txbuf[k] |= color_red << 3;
+            }
+
+            if ((((vmem16[i] & 0x07E0) >> 5) & 0xFF) >= thr * 4)
+            {
+                txbuf[k] |= color_green << 3;
+            }
+
+            if ((((vmem16[i] & 0x001F)) & 0xFF) >= thr * 2)
+            {
+                txbuf[k] |= color_blue << 3;
+            }
+
+            cur_offset++;
+
+            col = cur_offset % width;
+            row = cur_offset / width;
+
+            if ((((vmem16[i + 1] & 0xF800) >> 11) & 0xFF) >= thr * 2)
+            {
+                txbuf[k] |= color_red;
+            }
+
+            if ((((vmem16[i + 1] & 0x07E0) >> 5) & 0xFF) >= thr * 4)
+            {
+                txbuf[k] |= color_green;
+            }
+
+            if ((((vmem16[i + 1] & 0x001F)) & 0xFF) >= thr * 2)
+            {
+                txbuf[k] |= color_blue;
+            }
+
+            cur_offset++;
+            k++;
+        } 
+
+        /* send batch to device */
+        fbtft_write_spi_wr(par, txbuf, to_copy / 2);
+
+        vmem16 = vmem16 + to_copy;
+        remain -= to_copy;
+    }
+    return 0;
+}
+
 static int write_vmem(struct ili9488_par *par, size_t offset, size_t len)
 {
     u16 *vmem16;
@@ -486,16 +731,18 @@ static int write_vmem(struct ili9488_par *par, size_t offset, size_t len)
 
         for (i = 0, k = 0; i < to_copy; i++)
         {
-            txbuf[k++] = ((vmem16[i] & 0xF800) >> 8) & 0xFF;
-            txbuf[k++] = ((vmem16[i] & 0x07E0) >> 3) & 0xFF;
-            txbuf[k++] = ((vmem16[i] & 0x001F) << 3) & 0xFF;
+            txbuf[k++] = ((vmem16[i] & 0xFF00) >> 8) & 0xFF;
+            txbuf[k++] = (vmem16[i] & 0x00FF);
+            //txbuf[k++] = ((vmem16[i] & 0x001F) << 3) & 0xFF;
             // txbuf[k++] = 255;
             // txbuf[k++] = 0;
             // txbuf[k++] = 0;
         } 
 
+//        memcpy(txbuf, vmem16, to_copy * 2);
+
         /* send batch to device */
-        fbtft_write_spi_wr(par, txbuf, to_copy * 3);
+        fbtft_write_spi_wr(par, txbuf, to_copy * 2);
 
         vmem16 = vmem16 + to_copy;
         remain -= to_copy;
@@ -537,7 +784,18 @@ static void update_display(struct ili9488_par *par, unsigned int start_line,
     offset = start_line * par->fbinfo->fix.line_length;
     len = (end_line - start_line + 1) * par->fbinfo->fix.line_length;
 
-    write_vmem(par, offset, len);
+    if (p_3bit_mode)
+    {
+        if (p_dither)
+            write_vmem_3bit_dither(par, offset, len);
+	else
+            write_vmem_3bit(par, offset, len);
+    }
+    else
+    {
+        write_vmem(par, offset, len);
+    }
+
     gpio_put(par->gpio.cs, 1);
 
     // par->tftops->idle(par, true);
@@ -725,6 +983,13 @@ static const struct ili9488_display display = {
     .fps = 30,
 };
 
+static const struct ili9488_display display_3bit = {
+    .xres = 320,
+    .yres = 320,
+    .bpp = 16,
+    .fps = 60,
+};
+
 static int ili9488_probe(struct spi_device *spi)
 {
     struct device *dev = &spi->dev;
@@ -741,19 +1006,37 @@ static int ili9488_probe(struct spi_device *spi)
 
     printk("%s\n", __func__);
     /* memory resource alloc */
-
-    rotate = display.rotate;
-    bpp = display.bpp;
-    switch (rotate) {
-    case 90:
-    case 270:
-        width = display.yres;
-        height = display.xres;
-        break;
-    default:
-        width = display.xres;
-        height = display.yres;
-        break;
+    if (p_3bit_mode)
+    {
+        rotate = display_3bit.rotate;
+        bpp = display_3bit.bpp;
+        switch (rotate) {
+        case 90:
+        case 270:
+            width = display_3bit.yres;
+            height = display_3bit.xres;
+            break;
+        default:
+            width = display_3bit.xres;
+            height = display_3bit.yres;
+            break;
+        }
+    }
+    else
+    {
+        rotate = display.rotate;
+        bpp = display.bpp;
+        switch (rotate) {
+        case 90:
+        case 270:
+            width = display.yres;
+            height = display.xres;
+            break;
+        default:
+            width = display.xres;
+            height = display.yres;
+            break;
+        }
     }
 
     vmem_size = (width * height * bpp) / BITS_PER_BYTE;
@@ -838,7 +1121,14 @@ static int ili9488_probe(struct spi_device *spi)
 
     info->flags = FBINFO_FLAG_DEFAULT | FBINFO_VIRTFB;
 
-    fbdefio->delay = HZ / display.fps;
+    if (p_3bit_mode)
+    {
+        fbdefio->delay = HZ / display_3bit.fps;
+    }
+    else
+    {
+        fbdefio->delay = HZ / display.fps;
+    }
     fbdefio->deferred_io = ili9488_deferred_io;
     fb_deferred_io_init(info);
 
@@ -866,7 +1156,14 @@ static int ili9488_probe(struct spi_device *spi)
     par->txbuf.len = spi_tx_buf_size;
 
     par->tftops = &default_ili9488_ops;
-    par->display = &display;
+    if (p_3bit_mode)
+    {
+        par->display = &display_3bit;
+    }
+    else
+    {
+        par->display = &display;
+    }
 
     dev_set_drvdata(dev, par);
     spi_set_drvdata(spi, par);

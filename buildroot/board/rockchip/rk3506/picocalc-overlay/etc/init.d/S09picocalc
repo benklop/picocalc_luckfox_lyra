@@ -5,6 +5,9 @@ case "$1" in
     start)
 	insmod /usr/lib/ili9488_fb.ko
 	insmod /usr/lib/picocalc_kbd.ko
+
+#	insmod /usr/lib/picocalc_snd_pwm.ko
+
 	dmesg -n 1
         ;;
     stop)
